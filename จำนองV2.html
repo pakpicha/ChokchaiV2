@@ -1684,6 +1684,7 @@ var MCSS='.mm-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;backgro
 +'@media print{.mm-bar,#mm-modal,#mm-conn{display:none!important}}';
 /* ---------- ซิงก์กับ Google Sheets (ผ่าน Apps Script ของผู้ใช้เอง) ---------- */
 var CKEY='chokchai_cloud_v1',CDEL='chokchai_cloud_dels',PEPPER='chokchai-v1:';
+var DEFAULT_URL='https://script.google.com/macros/s/AKfycbwItv1vvn7VpxPnL5jeoalPGl7SIRoMT4CoAvdMcrE5KWTPvBrMgi3OBNzQqXCYy2-P/exec';
 function cCfg(){try{return JSON.parse(localStorage.getItem(CKEY)||'null');}catch(e){return null;}}
 function cSetCfg(c){try{if(c)localStorage.setItem(CKEY,JSON.stringify(c));else localStorage.removeItem(CKEY);}catch(e){}}
 function cDels(){try{return JSON.parse(localStorage.getItem(CDEL)||'[]');}catch(e){return [];}}
@@ -1703,7 +1704,7 @@ var cState={busy:false,last:0,err:''};
 function cStatus(){
   var e=$('mm-cloud');if(!e)return;
   var cfg=cCfg();
-  if(!cfg){e.innerHTML='☁️ ยังไม่ได้เชื่อม Google Sheets — เก็บในเครื่องนี้เท่านั้น';e.className='cl off';return;}
+  if(!cfg){e.innerHTML='☁️ ยังไม่ได้เชื่อม Google Sheets — <a href="#" onclick="MeetLink.connect();return false" style="color:#e65100">กดเพื่อใส่รหัสผ่าน</a>';e.className='cl off';return;}
   if(cState.err==='auth'||cState.err==='nopassword'){e.innerHTML='⚠️ รหัสผ่านไม่ถูกต้อง — กด "☁️ Google Sheets" เพื่อเชื่อมใหม่';e.className='cl bad';return;}
   if(cState.err==='locked'){e.innerHTML='⚠️ ใส่รหัสผิดหลายครั้ง ระบบล็อก 15 นาที';e.className='cl bad';return;}
   if(cState.err){e.innerHTML='⚠️ ยังซิงก์ไม่ได้ (เน็ต?) — เก็บในเครื่องไว้ก่อน จะลองใหม่อัตโนมัติ';e.className='cl warn';return;}
@@ -1761,8 +1762,8 @@ function connectDialog(){
   if(!m){m=document.createElement('div');m.id='mm-conn';m.className='no-print';document.body.appendChild(m);}
   var cfg=cCfg();
   m.innerHTML='<div class="mm-box"><div class="mm-head"><b>☁️ เชื่อม Google Sheets</b><button class="mm-x" data-c="close">×</button></div>'
-    +'<label class="cl-l">ลิงก์ Web App (จาก Apps Script → ทำให้ใช้งานได้)</label><input id="mm-url" class="mm-q" placeholder="https://script.google.com/macros/s/…/exec" value="'+esc(cfg?cfg.url:'')+'">'
-    +'<label class="cl-l">รหัสผ่าน (ที่ตั้งในเมนู 🔒 ระบบเอกสาร ของชีต)</label><input id="mm-pw" class="mm-q" type="password" autocomplete="current-password">'
+    +'<label class="cl-l">รหัสผ่าน (ที่ตั้งไว้ในชีต)</label><input id="mm-pw" class="mm-q" type="password" autocomplete="current-password">'
+    +'<details style="font-size:12px;color:#777"><summary>ตั้งค่าลิงก์ Web App (ปกติไม่ต้องแก้)</summary><input id="mm-url" class="mm-q" style="width:100%;margin-top:6px;font-size:12px" value="'+esc(cfg?cfg.url:DEFAULT_URL)+'"></details>'
     +'<div class="mm-note" style="text-align:left">รหัสผ่านไม่ถูกเก็บในไฟล์ HTML — เครื่องนี้จำไว้แค่ค่าที่เข้ารหัสแล้ว ถ้าเครื่องหายหรือให้คนอื่นยืม ให้เปลี่ยนรหัสในชีต</div>'
     +'<div id="mm-cmsg" class="mm-note"></div>'
     +'<button class="mm-new" data-c="go">เชื่อมต่อ</button>'
@@ -2106,7 +2107,7 @@ function initTarget(kind){
 
 var kind=window.ML_KIND?window.ML_KIND:$('meet-form')?'source':$('mort-form')?'mortgage':$('sb-form')?'sellback':$('dl-form')?'dirloan':($('grantor')&&$('tpl_sel'))?'poa':null;
 if(kind==='source')initSource();else if(kind){initTarget(kind);if(kind==='mortgage'||kind==='sellback'||kind==='topup')hookDocGen(kind);}
-window.MeetLink={collect:collect,load:load};
+window.MeetLink={collect:collect,load:load,connect:function(){try{connectDialog();}catch(e){}}};
 })();
 </script>
 <!-- ===== BKK ADDRESS (กรุงเทพฯ ใช้ แขวง/เขต) ===== -->
