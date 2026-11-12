@@ -1194,6 +1194,347 @@ function renderPanel(){
   var anchor=$('meet-doc-out');
   if(anchor)anchor.parentNode.insertBefore(box,anchor);else pv.appendChild(box);
 }
+/* ---------- บันทึกรายงานประชุม (หลายฉบับ) ---------- */
+var MKEY='chokchai_meetings_v1',MCUR='chokchai_meetings_cur';
+function mList(){try{return JSON.parse(localStorage.getItem(MKEY)||'[]');}catch(e){return [];}}
+function mSaveList(l){try{localStorage.setItem(MKEY,JSON.stringify(l));return true;}catch(e){alert('บันทึกไม่ได้: พื้นที่เก็บข้อมูลเต็ม ลองลบรายงานเก่าที่ไม่ใช้ หรือกด "ส่งออกไฟล์สำรอง" แล้วลบ');return false;}}
+function mCur(){try{return localStorage.getItem(MCUR)||'';}catch(e){return '';}}
+function mSetCur(id){try{if(id)localStorage.setItem(MCUR,id);else localStorage.removeItem(MCUR);}catch(e){}}
+var restoring=false;
+function serialize(){
+  var d={f:{},att:[],ags:[]};
+  ['mno','myr','mdt','ts','te','chairman','chairman-other'].forEach(function(id){var e=$(id);if(e)d.f[id]=e.value;});
+  var cb=document.querySelectorAll('.acb');for(var k=0;k<cb.length;k++)if(cb[k].checked)d.att.push(cb[k].value);
+  var ags=document.querySelectorAll('#agenda-box .ai');
+  for(k=0;k<ags.length;k++){
+    var i=ags[k].id.replace('agi-',''),pre='ag'+i+'_',sel=ags[k].querySelector('.at'),a={type:sel?sel.value:'mortgage',v:{},dl:[],hist:[],rem:[]};
+    var els=ags[k].querySelectorAll('[id^="'+pre+'"]');
+    for(var j=0;j<els.length;j++){var e=els[j],key=e.id.slice(pre.length);
+      if(!/^(INPUT|SELECT|TEXTAREA)$/.test(e.tagName)||/_pick$/.test(key)||/^[hr]\d+_/.test(key))continue;
+      a.v[key]=e.type==='checkbox'?!!e.checked:e.value;}
+    var dl=ags[k].querySelectorAll('.dl-cb-'+i);for(j=0;j<dl.length;j++)if(dl[j].checked)a.dl.push(j);
+    var hr=ags[k].querySelectorAll('.hist-row');
+    for(j=0;j<hr.length;j++){var r=hr[j],q=function(c){var x=r.querySelector(c);return x?x.value:'';};
+      a.hist.push({type:q('.h-type'),dt:q('input[type="hidden"]'),tno:q('.h-tno'),lno:q('.h-lno'),pv:q('.h-pv'),ap:q('.h-ap'),tb:q('.h-tb'),amt:q('.h-amt')});}
+    var rr=ags[k].querySelectorAll('.rem-row');
+    for(j=0;j<rr.length;j++){var r2=rr[j],q2=function(c){var x=r2.querySelector(c);return x?x.value:'';};
+      a.rem.push({tno:q2('.r-tno'),lno:q2('.r-lno'),pv:q2('.r-pv'),ap:q2('.r-ap'),tb:q2('.r-tb')});}
+    d.ags.push(a);
+  }
+  return d;
+}
+function hasContent(d){
+  if(d.f.mno||d.f.mdt)return true;
+  for(var k=0;k<d.ags.length;k++){var v=d.ags[k].v;for(var x in v)if(v[x]&&typeof v[x]==='string'&&x!=='mct'&&!/ct$|pwgr|rep/.test(x))return true;}
+  return false;
+}
+function mTitle(d){
+  var n=d.ags.length,names=[];
+  d.ags.forEach(function(a){if(a.v.cust)names.push(a.v.cust.split(/,| และ /)[0].trim());});
+  return 'ครั้งที่ '+(d.f.mno||'…')+'/'+(d.f.myr||'…')+(d.f.mdt?' · '+thaiDate(d.f.mdt):'')+' · '+n+' วาระ'+(names.length?' · '+names.slice(0,2).join(', ')+(names.length>2?' …':''):'');
+}
+function fireEl(e){fire(e);}
+function setDateF(id,iso){
+  try{if(typeof window.tdpInit==='function')window.tdpInit(id);}catch(e){}
+  if(iso){try{window.tdpSelect(id,iso);}catch(e){}var h=$(id);if(h&&h.value!==iso){h.value=iso;var t=$('tdpi_'+id);if(t&&typeof window._tdpFmt==='function')t.value=window._tdpFmt(iso);}}
+  else{var h2=$(id);if(h2)h2.value='';var t2=$('tdpi_'+id);if(t2)t2.value='';}
+}
+function restore(d,done){
+  restoring=true;
+  var f=d.f||{};
+  ['mno','myr','ts','te','chairman-other'].forEach(function(id){var e=$(id);if(e&&f[id]!=null)e.value=f[id];});
+  setDateF('mdt',f.mdt||'');
+  var ch=$('chairman');if(ch&&f.chairman!=null){ch.value=f.chairman;if(typeof window.toggleOther==='function')window.toggleOther();}
+  var cb=document.querySelectorAll('.acb');for(var k=0;k<cb.length;k++)cb[k].checked=(d.att||[]).indexOf(cb[k].value)>=0;
+  var box=$('agenda-box');box.innerHTML='';
+  var ids=[];
+  (d.ags||[]).forEach(function(a){window.addAg(a.type);var l=box.querySelectorAll('.ai');ids.push(l[l.length-1].id.replace('agi-',''));});
+  setTimeout(function(){
+    /* 1) ตัวเลือกที่สร้างช่องใหม่ (ประเภทหลักทรัพย์) */
+    (d.ags||[]).forEach(function(a,n){var i=ids[n];for(var key in a.v){if(!/(^|_)ct$|^mct$/.test(key))continue;var e=$('ag'+i+'_'+key);if(e&&e.value!==a.v[key]){e.value=a.v[key];fireEl(e);}}});
+    setTimeout(function(){
+      (d.ags||[]).forEach(function(a,n){
+        var i=ids[n];
+        for(var key in a.v){
+          if(/(^|_)ct$|^mct$/.test(key))continue;
+          var e=$('ag'+i+'_'+key);if(!e)continue;
+          if(e.type==='checkbox'){e.checked=!!a.v[key];fireEl(e);continue;}
+          if(e.type==='hidden'&&$('tdpw_ag'+i+'_'+key)){setDateF('ag'+i+'_'+key,a.v[key]);continue;}
+          e.value=a.v[key];if(!e.readOnly)fireEl(e);
+        }
+        var dl=document.querySelectorAll('.dl-cb-'+i);
+        for(var j=0;j<dl.length;j++){dl[j].checked=a.dl.indexOf(j)>=0;try{dl[j].dispatchEvent(new Event('change'));}catch(e){}}
+        (a.hist||[]).forEach(function(){if(typeof window.addHistRow==='function')window.addHistRow(parseInt(i,10));});
+        (a.rem||[]).forEach(function(){if(typeof window.addRemainRow==='function')window.addRemainRow(parseInt(i,10));});
+        var inp=$('ag'+i+'_cust');
+        if(inp&&inp._multi){var pp=inp.parentNode.querySelector('.ml-people');if(pp)pp.parentNode.removeChild(pp);inp._multi=false;var lab=inp.parentNode.querySelector('label');if(lab)lab.textContent='ชื่อ-นามสกุล ('+lab.textContent.replace(' (เพิ่มได้หลายคน)','')+')';inp.style.display='';enhanceCust(i);}
+      });
+      setTimeout(function(){
+        (d.ags||[]).forEach(function(a,n){
+          var i=ids[n],ag=$('agi-'+i);if(!ag)return;
+          var hr=ag.querySelectorAll('.hist-row');
+          (a.hist||[]).forEach(function(h,j){var r=hr[j];if(!r)return;
+            var s1=r.querySelector('.h-type');if(s1){s1.value=h.type||'redeem';try{s1.dispatchEvent(new Event('change'));}catch(e){}}
+            var hid=r.querySelector('input[type="hidden"]');if(hid&&h.dt)setDateF(hid.id,h.dt);
+            [['.h-tno','tno'],['.h-lno','lno'],['.h-pv','pv'],['.h-ap','ap'],['.h-tb','tb'],['.h-amt','amt']].forEach(function(p){var x=r.querySelector(p[0]);if(x){x.value=h[p[1]]||'';fireEl(x);}});});
+          var rr=ag.querySelectorAll('.rem-row');
+          (a.rem||[]).forEach(function(h,j){var r=rr[j];if(!r)return;
+            [['.r-tno','tno'],['.r-lno','lno'],['.r-pv','pv'],['.r-ap','ap'],['.r-tb','tb']].forEach(function(p){var x=r.querySelector(p[0]);if(x){x.value=h[p[1]]||'';fireEl(x);}});});
+        });
+        restoring=false;
+        if(done)done();
+      },120);
+    },120);
+  },150);
+}
+var saveT=null,lastSaved='';
+function saveNow(force){
+  if(restoring)return;
+  var d=serialize(),js=JSON.stringify(d);
+  if(!force&&js===lastSaved)return;
+  if(!hasContent(d)&&!mCur())return;
+  var l=mList(),id=mCur(),rec=null,k;
+  for(k=0;k<l.length;k++)if(l[k].id===id)rec=l[k];
+  if(!rec){rec={id:'m'+Date.now(),created:Date.now()};l.unshift(rec);mSetCur(rec.id);}
+  rec.saved=Date.now();rec.title=mTitle(d);rec.data=d;
+  if(mSaveList(l)){lastSaved=js;mStatus('💾 บันทึกในเครื่องแล้ว '+new Date().toTimeString().slice(0,5));cSchedule();cStatus();}
+}
+function schedSave(){if(restoring)return;clearTimeout(saveT);saveT=setTimeout(function(){saveNow(false);},700);}
+function mStatus(t){var e=$('mm-status');if(e)e.textContent=t;var c=$('mm-count');if(c)c.textContent=mList().length;}
+function resetForm(){
+  saveNow(true);mSetCur('');lastSaved='';
+  restore({f:{mno:'',myr:String(new Date().getFullYear()+543),mdt:'',ts:'08:00',te:'10:00',chairman:($('chairman')&&$('chairman').options[0].value)||'','chairman-other':''},
+    att:Array.prototype.map.call(document.querySelectorAll('.acb'),function(c){return c.value;}),ags:[{type:'mortgage',v:{},dl:[],hist:[],rem:[]}]},function(){
+    mStatus('📝 รายงานใหม่ — จะบันทึกอัตโนมัติเมื่อเริ่มกรอก');if(typeof window.showMeetForm==='function')window.showMeetForm();window.scrollTo(0,0);});
+}
+function openRec(id,thenPrint){
+  saveNow(false);
+  var l=mList(),rec=null;for(var k=0;k<l.length;k++)if(l[k].id===id)rec=l[k];
+  if(!rec)return;
+  closeModal();
+  mSetCur(rec.id);
+  restore(rec.data,function(){
+    lastSaved=JSON.stringify(serialize());
+    mStatus('📂 เปิด: '+rec.title);
+    if(thenPrint){window.genMeeting();}else{if(typeof window.showMeetForm==='function')window.showMeetForm();window.scrollTo(0,0);}
+  });
+}
+function dupRec(id){
+  var l=mList(),rec=null;for(var k=0;k<l.length;k++)if(l[k].id===id)rec=l[k];
+  if(!rec)return;
+  var c=JSON.parse(JSON.stringify(rec));c.id='m'+Date.now();c.created=c.saved=Date.now();c.title=rec.title+' (สำเนา)';
+  l.unshift(c);mSaveList(l);openRec(c.id,false);
+}
+function delRec(id){
+  if(!confirm('ลบรายงานนี้? (ลบแล้วกู้คืนไม่ได้)'))return;
+  var l=mList().filter(function(x){return x.id!==id;});mSaveList(l);
+  if(cCfg()){var dl=cDels();dl.push({id:id,saved:Date.now()});cSetDels(dl);cSync();}
+  if(mCur()===id){mSetCur('');lastSaved='';}
+  renderModal();mStatus('ลบแล้ว');
+}
+function exportAll(){
+  var blob=new Blob([JSON.stringify({type:'chokchai-meetings',ver:1,exported:Date.now(),items:mList()},null,1)],{type:'application/json'});
+  var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='รายงานประชุม-สำรอง-'+new Date().toISOString().slice(0,10)+'.json';
+  document.body.appendChild(a);a.click();setTimeout(function(){document.body.removeChild(a);},500);
+}
+function importAll(file){
+  var rd=new FileReader();
+  rd.onload=function(){
+    try{var o=JSON.parse(rd.result),items=o.items||[];var l=mList(),have={},n=0;l.forEach(function(x){have[x.id]=1;});
+      items.forEach(function(x){if(x&&x.id&&x.data&&!have[x.id]){l.push(x);n++;}});
+      l.sort(function(a,b){return (b.saved||0)-(a.saved||0);});mSaveList(l);renderModal();alert('นำเข้าแล้ว '+n+' รายงาน');
+    }catch(e){alert('ไฟล์ไม่ถูกต้อง');}
+  };
+  rd.readAsText(file);
+}
+function fmtTs(t){var d=new Date(t);return d.getDate()+'/'+(d.getMonth()+1)+'/'+(d.getFullYear()+543)+' '+d.toTimeString().slice(0,5);}
+function closeModal(){var m=$('mm-modal');if(m)m.style.display='none';}
+function renderModal(){
+  var m=$('mm-modal');
+  if(!m){m=document.createElement('div');m.id='mm-modal';m.className='no-print';document.body.appendChild(m);
+    m.addEventListener('click',function(e){
+      if(e.target===m)return closeModal();
+      var b=e.target.closest?e.target.closest('[data-act]'):null;if(!b)return;
+      var a=b.getAttribute('data-act'),id=b.getAttribute('data-id');
+      if(a==='close')closeModal();else if(a==='open')openRec(id,false);else if(a==='print')openRec(id,true);
+      else if(a==='dup')dupRec(id);else if(a==='del')delRec(id);else if(a==='new'){closeModal();resetForm();}
+      else if(a==='export')exportAll();else if(a==='cloud'){closeModal();connectDialog();}else if(a==='sync'){if(cCfg())cSync();else{closeModal();connectDialog();}}else if(a==='import')$('mm-file').click();
+    });
+    m.addEventListener('input',function(e){if(e.target.id==='mm-q')filterModal(e.target.value);});
+  }
+  var l=mList(),cur=mCur();
+  var h='<div class="mm-box"><div class="mm-head"><b>📂 รายงานประชุมที่บันทึกไว้ ('+l.length+')</b><button data-act="close" class="mm-x">×</button></div>'
+    +'<input id="mm-q" class="mm-q" placeholder="ค้นหา ครั้งที่ / ชื่อลูกค้า / วันที่">'
+    +'<button data-act="new" class="mm-new">➕ เริ่มรายงานใหม่</button><div class="mm-list">';
+  if(!l.length)h+='<div class="mm-empty">ยังไม่มีรายงานที่บันทึกไว้</div>';
+  l.forEach(function(r){
+    h+='<div class="mm-item'+(r.id===cur?' cur':'')+'" data-q="'+esc(r.title)+'"><div class="mm-t">'+(r.id===cur?'✏️ ':'')+esc(r.title)+'</div>'
+      +'<div class="mm-s">บันทึกล่าสุด '+fmtTs(r.saved)+(r.id===cur?' · กำลังแก้ไขอยู่':'')+'</div>'
+      +'<div class="mm-b"><button data-act="open" data-id="'+r.id+'">✏️ เปิดแก้ไข</button><button data-act="print" data-id="'+r.id+'">🖨️ ดู/พิมพ์</button>'
+      +'<button data-act="dup" data-id="'+r.id+'">📄 ทำสำเนา</button><button data-act="del" data-id="'+r.id+'" class="del">🗑</button></div></div>';
+  });
+  h+='</div><div class="mm-foot"><button data-act="cloud">☁️ Google Sheets</button><button data-act="sync">🔄 ซิงก์ตอนนี้</button><button data-act="export">⬇️ ส่งออกไฟล์สำรอง</button><button data-act="import">⬆️ นำเข้าไฟล์สำรอง</button>'
+    +'<input type="file" id="mm-file" accept=".json,application/json" style="display:none"></div>'
+    +'<div class="mm-note">'+(cCfg()?'เก็บในเครื่องนี้ และซิงก์ขึ้น Google Sheets ของคุณ':'ตอนนี้เก็บในเบราว์เซอร์ของเครื่องนี้เท่านั้น — กด "☁️ Google Sheets" เพื่อเก็บขึ้นชีตของคุณ')+'</div></div>';
+  m.innerHTML=h;m.style.display='flex';
+  $('mm-file').addEventListener('change',function(){if(this.files&&this.files[0])importAll(this.files[0]);});
+}
+function filterModal(q){
+  q=norm(q).toLowerCase();var it=document.querySelectorAll('#mm-modal .mm-item');
+  for(var k=0;k<it.length;k++)it[k].style.display=!q||norm(it[k].getAttribute('data-q')).toLowerCase().indexOf(q)>=0?'':'none';
+}
+var MCSS='.mm-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#fff;border:1px solid #e0e0d8;border-radius:12px;padding:10px 12px;margin-bottom:12px}'
++'.mm-bar button{font-family:inherit;font-size:14px;font-weight:700;border-radius:8px;padding:9px 12px;cursor:pointer;border:1px solid #1a3a2a;background:#1a3a2a;color:#fff}'
++'.mm-bar button.lt{background:#fff;color:#1a3a2a}.mm-bar .st{font-size:12px;color:#4a7c59;flex-basis:100%}'
++'#mm-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:2147482990;align-items:flex-end;justify-content:center;font-family:inherit}'
++'#mm-modal .mm-box{background:#f0f0eb;width:100%;max-width:640px;max-height:88vh;border-radius:18px 18px 0 0;padding:14px;display:flex;flex-direction:column;gap:8px}'
++'#mm-modal .mm-head{display:flex;justify-content:space-between;align-items:center;font-size:16px;color:#1a3a2a}.mm-x{background:none;border:none;font-size:26px;cursor:pointer}'
++'#mm-modal .mm-q{padding:10px;border:1px solid #ccc;border-radius:8px;font-family:inherit;font-size:15px}'
++'#mm-modal .mm-new{background:#4caf50;color:#fff;border:none;border-radius:8px;padding:11px;font-family:inherit;font-size:15px;font-weight:700;cursor:pointer}'
++'#mm-modal .mm-list{overflow:auto;flex:1;min-height:80px}'
++'#mm-modal .mm-item{background:#fff;border:1px solid #e0e0d8;border-radius:10px;padding:10px 12px;margin-bottom:8px}#mm-modal .mm-item.cur{border-color:#4caf50;background:#f3fbf3}'
++'#mm-modal .mm-t{font-weight:700;color:#1a3a2a;font-size:14px}#mm-modal .mm-s{font-size:12px;color:#888;margin:2px 0 6px}'
++'#mm-modal .mm-b{display:flex;gap:6px;flex-wrap:wrap}#mm-modal .mm-b button,#mm-modal .mm-foot button{font-family:inherit;font-size:13px;border:1px solid #c9d6cd;background:#fff;color:#1a3a2a;border-radius:7px;padding:7px 10px;cursor:pointer;font-weight:700}'
++'#mm-modal .mm-b .del{color:#c00;border-color:#f3c0c0}#mm-modal .mm-foot{display:flex;gap:6px;flex-wrap:wrap}#mm-modal .mm-note,#mm-modal .mm-empty{font-size:12px;color:#777;text-align:center;padding:4px}'
++'.mm-bar .cl{font-size:12px;flex-basis:100%;color:#777}.mm-bar .cl.ok{color:#2e7d32}.mm-bar .cl.warn{color:#e65100}.mm-bar .cl.bad{color:#c62828;font-weight:700}'
++'#mm-conn{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:2147482991;align-items:flex-end;justify-content:center;font-family:inherit}'
++'#mm-conn .mm-box{background:#f0f0eb;width:100%;max-width:640px;border-radius:18px 18px 0 0;padding:14px;display:flex;flex-direction:column;gap:8px}'
++'#mm-conn .mm-head{display:flex;justify-content:space-between;align-items:center;font-size:16px;color:#1a3a2a}#mm-conn .cl-l{font-size:13px;color:#555;font-weight:700}'
++'#mm-conn .mm-q{padding:10px;border:1px solid #ccc;border-radius:8px;font-family:inherit;font-size:15px}#mm-conn .mm-note{font-size:12px;color:#777}'
++'#mm-conn .mm-new{background:#4caf50;color:#fff;border:none;border-radius:8px;padding:12px;font-family:inherit;font-size:15px;font-weight:700;cursor:pointer}'
++'#mm-conn .mm-off{background:#fff;color:#c00;border:1px solid #f3c0c0;border-radius:8px;padding:10px;font-family:inherit;font-size:14px;cursor:pointer}'
++'@media print{.mm-bar,#mm-modal,#mm-conn{display:none!important}}';
+/* ---------- ซิงก์กับ Google Sheets (ผ่าน Apps Script ของผู้ใช้เอง) ---------- */
+var CKEY='chokchai_cloud_v1',CDEL='chokchai_cloud_dels',PEPPER='chokchai-v1:';
+function cCfg(){try{return JSON.parse(localStorage.getItem(CKEY)||'null');}catch(e){return null;}}
+function cSetCfg(c){try{if(c)localStorage.setItem(CKEY,JSON.stringify(c));else localStorage.removeItem(CKEY);}catch(e){}}
+function cDels(){try{return JSON.parse(localStorage.getItem(CDEL)||'[]');}catch(e){return [];}}
+function cSetDels(l){try{localStorage.setItem(CDEL,JSON.stringify(l));}catch(e){}}
+function sha256hex(str){
+  if(!(window.crypto&&crypto.subtle&&window.TextEncoder))return Promise.reject(new Error('nocrypto'));
+  return crypto.subtle.digest('SHA-256',new TextEncoder().encode(str)).then(function(b){
+    return Array.prototype.map.call(new Uint8Array(b),function(x){return ('0'+x.toString(16)).slice(-2);}).join('');});
+}
+function cCall(action,extra,cfg){
+  cfg=cfg||cCfg();if(!cfg)return Promise.reject(new Error('noconfig'));
+  var body={action:action,key:cfg.key};for(var k in extra)if(extra.hasOwnProperty(k))body[k]=extra[k];
+  return fetch(cfg.url,{method:'POST',body:JSON.stringify(body),redirect:'follow'}).then(function(r){return r.json();}).then(function(o){
+    if(!o||!o.ok){var er=new Error((o&&o.error)||'error');er.server=true;throw er;}return o;});
+}
+var cState={busy:false,last:0,err:''};
+function cStatus(){
+  var e=$('mm-cloud');if(!e)return;
+  var cfg=cCfg();
+  if(!cfg){e.innerHTML='☁️ ยังไม่ได้เชื่อม Google Sheets — เก็บในเครื่องนี้เท่านั้น';e.className='cl off';return;}
+  if(cState.err==='auth'||cState.err==='nopassword'){e.innerHTML='⚠️ รหัสผ่านไม่ถูกต้อง — กด "☁️ Google Sheets" เพื่อเชื่อมใหม่';e.className='cl bad';return;}
+  if(cState.err==='locked'){e.innerHTML='⚠️ ใส่รหัสผิดหลายครั้ง ระบบล็อก 15 นาที';e.className='cl bad';return;}
+  if(cState.err){e.innerHTML='⚠️ ยังซิงก์ไม่ได้ (เน็ต?) — เก็บในเครื่องไว้ก่อน จะลองใหม่อัตโนมัติ';e.className='cl warn';return;}
+  var pend=mList().filter(function(r){return !r.synced||r.synced<r.saved;}).length+cDels().length;
+  if(cState.busy){e.innerHTML='☁️ กำลังซิงก์…';e.className='cl';return;}
+  e.innerHTML=pend?('☁️ รอส่งขึ้น Google Sheets '+pend+' รายการ'):('☁️ ซิงก์กับ Google Sheets แล้ว'+(cState.last?' '+new Date(cState.last).toTimeString().slice(0,5):''));
+  e.className='cl '+(pend?'warn':'ok');
+}
+function cFail(err){cState.busy=false;cState.err=(err&&err.server)?err.message:'net';cStatus();}
+function cPush(rec){
+  return cCall('save',{record:{id:rec.id,title:rec.title,created:rec.created,saved:rec.saved,data:rec.data}}).then(function(o){
+    var l=mList();
+    for(var k=0;k<l.length;k++)if(l[k].id===rec.id){
+      if(o.stale&&o.record){
+        if(o.record.deleted){l.splice(k,1);if(mCur()===rec.id)mSetCur('');}
+        else{o.record.synced=o.record.saved;l[k]=o.record;}
+      }else if(l[k].saved===rec.saved)l[k].synced=rec.saved;
+      break;}
+    mSaveList(l);
+  });
+}
+function cSync(){
+  if(!cCfg()||cState.busy)return Promise.resolve();
+  cState.busy=true;cState.err='';cStatus();
+  var dels=cDels();
+  var p=Promise.resolve();
+  dels.forEach(function(d){p=p.then(function(){return cCall('delete',{id:d.id,saved:d.saved});});});
+  return p.then(function(){cSetDels([]);return cCall('list',{});}).then(function(o){
+    var l=mList(),byId={},k;
+    for(k=0;k<l.length;k++)byId[l[k].id]=l[k];
+    (o.items||[]).forEach(function(s){
+      var loc=byId[s.id];
+      if(s.deleted){if(loc&&(loc.saved||0)<=s.saved){l=l.filter(function(x){return x.id!==s.id;});if(mCur()===s.id)mSetCur('');}return;}
+      if(!s.data)return;
+      if(!loc){s.synced=s.saved;l.push(s);}
+      else if(s.saved>(loc.saved||0)){s.synced=s.saved;for(var j=0;j<l.length;j++)if(l[j].id===s.id)l[j]=s;}
+      else if(s.saved===loc.saved)loc.synced=s.saved;
+    });
+    l.sort(function(a,b){return (b.saved||0)-(a.saved||0);});
+    mSaveList(l);
+    var q=Promise.resolve();
+    l.filter(function(r){return !r.synced||r.synced<r.saved;}).forEach(function(r){q=q.then(function(){return cPush(r);});});
+    return q;
+  }).then(function(){cState.busy=false;cState.last=Date.now();cState.err='';cStatus();var m=$('mm-modal');if(m&&m.style.display==='flex')renderModal();var c=$('mm-count');if(c)c.textContent=mList().length;},cFail);
+}
+var cT=null;
+function cSchedule(){if(!cCfg())return;clearTimeout(cT);cT=setTimeout(function(){
+  var id=mCur(),l=mList(),rec=null;for(var k=0;k<l.length;k++)if(l[k].id===id)rec=l[k];
+  if(!rec||(rec.synced&&rec.synced>=rec.saved)){cStatus();return;}
+  cState.busy=true;cStatus();
+  cPush(rec).then(function(){cState.busy=false;cState.err='';cState.last=Date.now();cStatus();},cFail);
+},2500);}
+function connectDialog(){
+  var m=$('mm-conn');
+  if(!m){m=document.createElement('div');m.id='mm-conn';m.className='no-print';document.body.appendChild(m);}
+  var cfg=cCfg();
+  m.innerHTML='<div class="mm-box"><div class="mm-head"><b>☁️ เชื่อม Google Sheets</b><button class="mm-x" data-c="close">×</button></div>'
+    +'<label class="cl-l">ลิงก์ Web App (จาก Apps Script → ทำให้ใช้งานได้)</label><input id="mm-url" class="mm-q" placeholder="https://script.google.com/macros/s/…/exec" value="'+esc(cfg?cfg.url:'')+'">'
+    +'<label class="cl-l">รหัสผ่าน (ที่ตั้งในเมนู 🔒 ระบบเอกสาร ของชีต)</label><input id="mm-pw" class="mm-q" type="password" autocomplete="current-password">'
+    +'<div class="mm-note" style="text-align:left">รหัสผ่านไม่ถูกเก็บในไฟล์ HTML — เครื่องนี้จำไว้แค่ค่าที่เข้ารหัสแล้ว ถ้าเครื่องหายหรือให้คนอื่นยืม ให้เปลี่ยนรหัสในชีต</div>'
+    +'<div id="mm-cmsg" class="mm-note"></div>'
+    +'<button class="mm-new" data-c="go">เชื่อมต่อ</button>'
+    +(cfg?'<button class="mm-off" data-c="off">ยกเลิกการเชื่อมต่อในเครื่องนี้</button>':'')+'</div>';
+  m.style.display='flex';
+  m.onclick=function(e){
+    if(e.target===m)return m.style.display='none';
+    var b=e.target.closest?e.target.closest('[data-c]'):null;if(!b)return;
+    var a=b.getAttribute('data-c'),msg=$('mm-cmsg');
+    if(a==='close'){m.style.display='none';return;}
+    if(a==='off'){if(confirm('ยกเลิกการเชื่อมต่อ Google Sheets ในเครื่องนี้? (ข้อมูลในชีตยังอยู่ครบ)')){cSetCfg(null);cState.err='';cStatus();m.style.display='none';}return;}
+    if(a==='go'){
+      var url=($('mm-url').value||'').trim(),pw=$('mm-pw').value||'';
+      if(!/^https:\/\/script\.google(usercontent)?\.com\//.test(url)){msg.textContent='ลิงก์ต้องขึ้นต้นด้วย https://script.google.com/…';return;}
+      if(pw.length<8){msg.textContent='ใส่รหัสผ่าน (อย่างน้อย 8 ตัว)';return;}
+      msg.textContent='กำลังตรวจสอบ…';
+      sha256hex(PEPPER+pw).then(function(key){
+        var c={url:url,key:key};
+        return cCall('ping',{},c).then(function(){cSetCfg(c);msg.textContent='เชื่อมต่อแล้ว ✅';m.style.display='none';cState.err='';cSync();});
+      }).catch(function(err){
+        var t=err&&err.message;
+        msg.textContent=t==='auth'?'รหัสผ่านไม่ถูกต้อง':t==='locked'?'ใส่รหัสผิดหลายครั้ง ระบบล็อก 15 นาที':t==='nopassword'?'ยังไม่ได้ตั้งรหัสผ่านในชีต (เมนู 🔒 ระบบเอกสาร)':t==='nocrypto'?'เบราว์เซอร์นี้ไม่รองรับ ต้องเปิดผ่าน https':'เชื่อมต่อไม่ได้ — ตรวจลิงก์ และตั้งค่า "ผู้มีสิทธิ์เข้าถึง: ทุกคน" ตอนทำให้ใช้งานได้';
+      });
+    }
+  };
+}
+
+function initSaves(){
+  var st=document.createElement('style');st.textContent=MCSS;document.head.appendChild(st);
+  var form=$('meet-form'),head=form&&form.querySelector('.ui-head');
+  var bar=document.createElement('div');bar.className='mm-bar no-print';
+  bar.innerHTML='<button type="button" id="mm-openlist">📂 รายงานที่บันทึกไว้ (<span id="mm-count">0</span>)</button><button type="button" class="lt" id="mm-new">➕ เริ่มรายงานใหม่</button><button type="button" class="lt" id="mm-cloudbtn">☁️ Google Sheets</button><span class="st" id="mm-status"></span><span class="cl off" id="mm-cloud"></span>';
+  if(head&&head.nextSibling)head.parentNode.insertBefore(bar,head.nextSibling);else if(form)form.insertBefore(bar,form.firstChild);
+  $('mm-openlist').addEventListener('click',function(){saveNow(false);renderModal();cSync();});
+  $('mm-cloudbtn').addEventListener('click',connectDialog);
+  $('mm-new').addEventListener('click',function(){if(confirm('เริ่มรายงานใหม่? (รายงานปัจจุบันบันทึกไว้แล้ว เปิดกลับมาได้จาก "รายงานที่บันทึกไว้")'))resetForm();});
+  form.addEventListener('input',schedSave,true);form.addEventListener('change',schedSave,true);
+  form.addEventListener('click',function(e){if(e.target.closest&&e.target.closest('.ml-pdel,.rb,.dyn-del'))schedSave();},true);
+  ['addAg','removeAg','changeAg','addHistRow','addRemainRow'].forEach(function(fn){var o=window[fn];if(typeof o!=='function')return;window[fn]=function(){var r=o.apply(this,arguments);schedSave();return r;};});
+  var og=window.genMeeting;if(typeof og==='function')window.genMeeting=function(){saveNow(true);return og.apply(this,arguments);};
+  window.addEventListener('beforeunload',function(){saveNow(false);});
+  document.addEventListener('visibilitychange',function(){if(document.hidden)saveNow(false);});
+  var id=mCur(),l=mList(),rec=null;for(var k=0;k<l.length;k++)if(l[k].id===id)rec=l[k];
+  if(rec){restore(rec.data,function(){lastSaved=JSON.stringify(serialize());mStatus('📂 เปิดต่อจากครั้งก่อน: '+rec.title);});}
+  else mStatus(l.length?'📝 รายงานใหม่ — จะบันทึกอัตโนมัติเมื่อเริ่มกรอก':'จะบันทึกอัตโนมัติเมื่อเริ่มกรอก');
+  cStatus();
+  if(cCfg()){setTimeout(cSync,1200);setInterval(function(){if(cState.err&&cState.err!=='auth'&&cState.err!=='locked'&&cState.err!=='nopassword')cSync();},60000);}
+  window.addEventListener('online',function(){if(cCfg())cSync();});
+}
+
 function initSource(){
   addCss();
   ['addAg','changeAg'].forEach(function(fn){
@@ -1201,6 +1542,7 @@ function initSource(){
     window[fn]=function(){var r=o.apply(this,arguments);setTimeout(enhanceAll,0);return r;};
   });
   enhanceAll();
+  try{initSaves();}catch(e){if(window.console)console.warn('saves',e);}
   var orig=window.genMeeting;
   if(typeof orig==='function'){
     window.genMeeting=function(){var r=orig.apply(this,arguments);try{renderPanel();}catch(e){}return r;};
