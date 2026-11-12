@@ -1767,7 +1767,9 @@ function sha256hex(str){
 function cCall(action,extra,cfg){
   cfg=cfg||cCfg();if(!cfg)return Promise.reject(new Error('noconfig'));
   var body={action:action,key:(SESS&&SESS.auth)||cfg.key};for(var k in extra)if(extra.hasOwnProperty(k))body[k]=extra[k];
-  return fetch(cfg.url,{method:'POST',body:JSON.stringify(body),redirect:'follow'}).then(function(r){return r.json();}).then(function(o){
+  return fetch(cfg.url,{method:'POST',body:JSON.stringify(body),redirect:'follow'}).then(function(r){
+    return r.text().then(function(t){try{return JSON.parse(t);}catch(e){var er=new Error('html');er.html=true;throw er;}});
+  }).then(function(o){
     if(!o||!o.ok){var er=new Error((o&&o.error)||'error');er.server=true;throw er;}return o;});
 }
 var cState={busy:false,last:0,err:''};
@@ -1881,7 +1883,7 @@ function connectDialog(){
         if(window.__mlAfterUnlock){var f=window.__mlAfterUnlock;window.__mlAfterUnlock=null;f();}
       }).catch(function(err){
         var t=err&&err.message;
-        msg.textContent=t==='auth'?'รหัสผ่านไม่ถูกต้อง':t==='locked'?'ใส่รหัสผิดหลายครั้ง ระบบล็อก 15 นาที':t==='nopassword'?'ยังไม่ได้ตั้งรหัสผ่านในชีต (เมนู 🔒 ระบบเอกสาร)':t==='nocrypto'?'เบราว์เซอร์นี้ไม่รองรับ ต้องเปิดผ่าน https':'เชื่อมต่อไม่ได้ — ตรวจลิงก์ และตั้งค่า "ผู้มีสิทธิ์เข้าถึง: ทุกคน" ตอนทำให้ใช้งานได้';
+        msg.textContent=t==='auth'?'รหัสผ่านไม่ถูกต้อง':t==='locked'?'ใส่รหัสผิดหลายครั้ง ระบบล็อก 15 นาที':t==='nopassword'?'ยังไม่ได้ตั้งรหัสผ่านในชีต (เมนู 🔒 ระบบเอกสาร)':t==='nocrypto'?'เบราว์เซอร์นี้ไม่รองรับ ต้องเปิดผ่าน https':t==='html'?'Google ตอบกลับเป็นหน้าเว็บ ไม่ใช่ข้อมูล — ใน Apps Script ให้แก้การทำให้ใช้งานได้: "ผู้มีสิทธิ์เข้าถึง: ทุกคน" + เวอร์ชันใหม่':'ติดต่อ Google ไม่ได้ — ตรวจอินเทอร์เน็ต หรือลองเปิดหน้านี้ผ่านเว็บ GitHub Pages (ไม่ใช่ไฟล์ในเครื่อง)';
       });
     }
   };
@@ -1938,7 +1940,8 @@ function initSaves(){
   form.addEventListener('input',schedSave,true);form.addEventListener('change',schedSave,true);
   form.addEventListener('click',function(e){if(e.target.closest&&e.target.closest('.ml-pdel,.rb,.dyn-del'))schedSave();},true);
   ['addAg','removeAg','changeAg','addHistRow','addRemainRow'].forEach(function(fn){var o=window[fn];if(typeof o!=='function')return;window[fn]=function(){var r=o.apply(this,arguments);schedSave();return r;};});
-  var og=window.genMeeting;if(typeof og==='function')window.genMeeting=function(){saveNow(true);return og.apply(this,arguments);};
+  var og=window.genMeeting;if(typeof og==='function')window.genMeeting=function(){saveNow(true);try{sessionStorage.setItem('ml_meet_view','preview');}catch(e){}return og.apply(this,arguments);};
+  var osf=window.showMeetForm;if(typeof osf==='function')window.showMeetForm=function(){try{sessionStorage.setItem('ml_meet_view','form');}catch(e){}return osf.apply(this,arguments);};
   window.addEventListener('beforeunload',function(){saveNow(false);persistNow();});
   document.addEventListener('visibilitychange',function(){if(document.hidden){saveNow(false);persistNow();}});
   $('mm-lockbtn').addEventListener('click',function(){if(encOn())lockNow();else connectDialog();});
@@ -1962,7 +1965,7 @@ function afterUnlock(){
 }
 function afterLoad(){
   var id=mCur(),l=mList(),rec=null;for(var k=0;k<l.length;k++)if(l[k].id===id)rec=l[k];
-  if(rec){restore(rec.data,function(){lastSaved=JSON.stringify(serialize());mStatus('📂 เปิดต่อจากครั้งก่อน: '+rec.title);});}
+  if(rec){restore(rec.data,function(){lastSaved=JSON.stringify(serialize());mStatus('📂 เปิดต่อจากครั้งก่อน: '+rec.title);var vw='';try{vw=sessionStorage.getItem('ml_meet_view');}catch(e){}if(vw==='preview')window.genMeeting();});}
   else mStatus(l.length?'📝 รายงานใหม่ — จะบันทึกอัตโนมัติเมื่อเริ่มกรอก':'จะบันทึกอัตโนมัติเมื่อเริ่มกรอก');
   cStatus();var c0=$('mm-count');if(c0)c0.textContent=mList().length;
   var lb=$('mm-lockbtn');if(lb)lb.style.display=encOn()?'':'none';
@@ -2343,6 +2346,112 @@ function init(){
 }
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
 window.BkkAddr={run:runAll,fix:fixRoot};
+})();
+</script>
+<!-- ===== PAGE STATE (จำข้อมูลระหว่างสลับหน้า) ===== -->
+<script id="__ps-js">
+/* ===== PAGE STATE — จำข้อมูลฟอร์ม/หน้าเอกสาร ระหว่างสลับหน้า (กดกลับแล้วไม่หาย) ===== */
+(function(){
+if(window.__pageState)return;window.__pageState=true;
+function $(id){return document.getElementById(id);}
+var KEY='ps:'+location.pathname;
+var FRESH=/[?&]from=(meeting|doc)/.test(location.search);
+var CFG=null;
+if($('mort-form'))CFG={rows:[{box:'mortgagors-wrap',add:'addMortgagor'},{box:'pay-box',add:'addPay',type:'.pay-type-sel'}],pre:['tu_no'],hook:function(){if(window.tuRows)window.tuRows();},after:function(){if(window.tuCalc)window.tuCalc();},gen:'genMortgage',preview:'mort-preview',back:'showMortForm'};
+else if($('sb-form'))CFG={rows:[{box:'sellers-wrap',add:'addSeller'},{box:'sb-pay-box',add:'addSbPay',type:'.sbts'}],pre:[],gen:'genSellback',preview:'sb-preview',back:'showSbForm'};
+else if($('dl-form'))CFG={rows:[],pre:[],gen:'genDirLoan',preview:'dl-preview',back:'showDlForm'};
+else if($('grantor')&&$('tpl_sel'))CFG={rows:[],pre:['grantee_sel','tpl_sel'],gen:'genDoc',preview:'docOut',back:'backToForm'};
+if(!CFG)return;
+
+var SKIP=/^(mm-|lk-|ml-|__)/;
+function inRows(el){for(var k=0;k<CFG.rows.length;k++){var b=$(CFG.rows[k].box);if(b&&b.contains(el))return true;}return false;}
+function num(id){var m=String(id||'').match(/(\d+)$/);return m?m[1]:null;}
+function keyOf(id,n){return id.replace(new RegExp('(^|\\D)'+n+'(?=\\D|$)'),'$1#');}
+function vis(id){var e=$(id);return !!(e&&e.style.display!=='none'&&(e.offsetWidth||e.offsetHeight||e.getClientRects().length));}
+
+function serialize(){
+  var d={v:{},radio:{},cbx:[],rows:[],view:vis(CFG.preview)?'preview':'form',t:Date.now()};
+  var els=document.querySelectorAll('input[id],select[id],textarea[id]');
+  for(var i=0;i<els.length;i++){
+    var e=els[i];if(SKIP.test(e.id)||e.type==='password'||e.type==='file'||inRows(e))continue;
+    if(e.type==='radio')continue;
+    d.v[e.id]=e.type==='checkbox'?!!e.checked:e.value;
+  }
+  var rs=document.querySelectorAll('input[type="radio"][name]');
+  for(i=0;i<rs.length;i++)if(rs[i].checked)d.radio[rs[i].name]=rs[i].value;
+  var cb=document.querySelectorAll('input[type="checkbox"]:not([id])');
+  for(i=0;i<cb.length;i++)d.cbx.push(!!cb[i].checked);
+  CFG.rows.forEach(function(c){
+    var box=$(c.box),out=[];
+    if(box)Array.prototype.forEach.call(box.children,function(row){
+      var n=num(row.id);if(n==null)return;
+      var r={f:{}};if(c.type){var ts=row.querySelector(c.type);if(ts)r.type=ts.value;}
+      row.querySelectorAll('input[id],select[id],textarea[id]').forEach(function(e){r.f[keyOf(e.id,n)]=e.type==='checkbox'?!!e.checked:e.value;});
+      out.push(r);
+    });
+    d.rows.push(out);
+  });
+  return d;
+}
+var T=null,restoring=false;
+function save(){if(restoring)return;try{sessionStorage.setItem(KEY,JSON.stringify(serialize()));}catch(e){}}
+function sched(){if(restoring)return;clearTimeout(T);T=setTimeout(save,400);}
+function fire(e,type){try{e.dispatchEvent(new Event(type,{bubbles:true}));}catch(x){}}
+function setDate(id,iso){
+  try{if(window.tdpInit)window.tdpInit(id);}catch(e){}
+  if(iso){try{window.tdpSelect(id,iso);}catch(e){}}
+  var h=$(id);if(h&&h.value!==iso){h.value=iso;var t=$('tdpi_'+id);if(t)t.value=(iso&&window._tdpFmt)?window._tdpFmt(iso):'';}
+}
+function setEl(e,v,evt){
+  if(!e)return;
+  if(e.type==='checkbox'){e.checked=!!v;if(evt)fire(e,'change');return;}
+  if(e.type==='hidden'&&$('tdpw_'+e.id)){setDate(e.id,v);return;}
+  e.value=v==null?'':v;
+  if(evt&&e.tagName==='SELECT')fire(e,'change');
+}
+function restore(d){
+  restoring=true;
+  try{
+    CFG.rows.forEach(function(c,ci){
+      var box=$(c.box),saved=d.rows[ci]||[];if(!box||typeof window[c.add]!=='function')return;
+      if(!saved.length)return;
+      while(box.firstChild)box.removeChild(box.firstChild);
+      saved.forEach(function(r){
+        window[c.add](r.type);
+        var row=box.lastElementChild,n=row?num(row.id):null;if(n==null)return;
+        for(var k in r.f){var e=$(k.replace('#',n));if(e){if(e.type==='checkbox')e.checked=!!r.f[k];else e.value=r.f[k];}}
+      });
+    });
+    CFG.pre.forEach(function(id){if(d.v[id]!=null){var e=$(id);if(e){e.value=d.v[id];fire(e,'change');fire(e,'input');}}});
+    if(CFG.hook)CFG.hook();
+    for(var id in d.v){if(CFG.pre.indexOf(id)>=0)continue;setEl($(id),d.v[id],true);}
+    for(var nm in d.radio){var r=document.querySelector('input[type="radio"][name="'+nm+'"][value="'+String(d.radio[nm]).replace(/"/g,'\\"')+'"]');if(r){r.checked=true;fire(r,'change');}}
+    var cb=document.querySelectorAll('input[type="checkbox"]:not([id])');
+    for(var i=0;i<cb.length&&i<d.cbx.length;i++)cb[i].checked=d.cbx[i];
+    if(CFG.after)CFG.after();
+  }catch(e){if(window.console)console.warn('page-state',e);}
+  restoring=false;
+  if(d.view==='preview'&&typeof window[CFG.gen]==='function'){try{window[CFG.gen]();}catch(e){}}
+}
+function init(){
+  document.addEventListener('input',sched,true);
+  document.addEventListener('change',sched,true);
+  document.addEventListener('click',function(){setTimeout(sched,50);},true);
+  window.addEventListener('pagehide',save);
+  window.addEventListener('beforeunload',save);
+  document.addEventListener('visibilitychange',function(){if(document.hidden)save();});
+  [CFG.gen,CFG.back].forEach(function(fn){
+    var o=window[fn];if(typeof o!=='function')return;
+    window[fn]=function(){var r=o.apply(this,arguments);if(!restoring)setTimeout(save,0);return r;};
+  });
+  if(FRESH){try{sessionStorage.removeItem(KEY);}catch(e){}return;}
+  var d=null;try{d=JSON.parse(sessionStorage.getItem(KEY)||'null');}catch(e){}
+  if(d)restore(d);
+}
+function start(){setTimeout(init,250);}
+if(document.readyState==='complete')start();else window.addEventListener('load',start);
+/* กลับมาจาก cache ของเบราว์เซอร์ (iPhone) — หน้ายังอยู่ครบ ไม่ต้องทำอะไร */
+window.PageState={save:save};
 })();
 </script>
 <!-- ===== DOC EDITOR (แก้ไขเอกสารก่อนพิมพ์) ===== -->
