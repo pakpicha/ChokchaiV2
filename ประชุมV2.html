@@ -1648,8 +1648,9 @@ function autoRestore(){
   } catch(e) { return false; }
 }
 
-setInterval(autoSave, 2000);
-window.addEventListener('beforeunload', autoSave);
+function _lsAutoSave(){if(window.__noPlainAutosave)return;autoSave();}
+setInterval(_lsAutoSave, 2000);
+window.addEventListener('beforeunload', _lsAutoSave);
 
 // ── ค่าฟิลด์ที่ล็อก (override ทุกครั้งหลัง restore) ──
 var LOCKED_FIELDS = {
@@ -2036,8 +2037,64 @@ function renderPanel(){
 }
 /* ---------- บันทึกรายงานประชุม (หลายฉบับ) ---------- */
 var MKEY='chokchai_meetings_v1',MCUR='chokchai_meetings_cur';
-function mList(){try{return JSON.parse(localStorage.getItem(MKEY)||'[]');}catch(e){return [];}}
-function mSaveList(l){try{localStorage.setItem(MKEY,JSON.stringify(l));return true;}catch(e){alert('บันทึกไม่ได้: พื้นที่เก็บข้อมูลเต็ม ลองลบรายงานเก่าที่ไม่ใช้ หรือกด "ส่งออกไฟล์สำรอง" แล้วลบ');return false;}}
+/* ---- ชั้นเข้ารหัส: AES-GCM 256 + PBKDF2 จากรหัสผ่าน (กุญแจอยู่ในหน่วยความจำ/แท็บนี้เท่านั้น) ---- */
+var ENC_SALT='chokchai-enc-v1',ENC_ITER=200000,SKEY='chokchai_sess';
+var SESS=null,MEM=null,encCache={};
+function b64(buf){var a=new Uint8Array(buf),s='';for(var i=0;i<a.length;i++)s+=String.fromCharCode(a[i]);return btoa(s);}
+function unb64(t){var s=atob(t),a=new Uint8Array(s.length);for(var i=0;i<s.length;i++)a[i]=s.charCodeAt(i);return a;}
+function deriveEK(pw){
+  var te=new TextEncoder();
+  return crypto.subtle.importKey('raw',te.encode(pw),'PBKDF2',false,['deriveKey']).then(function(base){
+    return crypto.subtle.deriveKey({name:'PBKDF2',salt:te.encode(ENC_SALT),iterations:ENC_ITER,hash:'SHA-256'},base,{name:'AES-GCM',length:256},true,['encrypt','decrypt']);});
+}
+function encObj(o,key){
+  key=key||(SESS&&SESS.ek);if(!key)return Promise.reject(new Error('locked'));
+  var iv=crypto.getRandomValues(new Uint8Array(12));
+  return crypto.subtle.encrypt({name:'AES-GCM',iv:iv},key,new TextEncoder().encode(JSON.stringify(o))).then(function(ct){return {iv:b64(iv),ct:b64(ct)};});
+}
+function decObj(e,key){
+  key=key||(SESS&&SESS.ek);if(!key)return Promise.reject(new Error('locked'));
+  return crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(e.iv)},key,unb64(e.ct)).then(function(pt){return JSON.parse(new TextDecoder().decode(pt));});
+}
+function saveSess(){if(!SESS)return Promise.resolve();return crypto.subtle.exportKey('raw',SESS.ek).then(function(raw){try{sessionStorage.setItem(SKEY,JSON.stringify({auth:SESS.auth,raw:b64(raw)}));}catch(e){}});}
+function loadSess(){
+  var o=null;try{o=JSON.parse(sessionStorage.getItem(SKEY)||'null');}catch(e){}
+  if(!o||!o.raw||!(window.crypto&&crypto.subtle))return Promise.resolve(false);
+  return crypto.subtle.importKey('raw',unb64(o.raw),{name:'AES-GCM'},true,['encrypt','decrypt']).then(function(k){SESS={auth:o.auth,ek:k};return true;},function(){return false;});
+}
+function encOn(){return !!cCfg();}
+function plainList(){try{var v=JSON.parse(localStorage.getItem(MKEY)||'[]');return Array.isArray(v)?v:null;}catch(e){return [];}}
+function mList(){if(encOn())return MEM?MEM.slice():[];return plainList()||[];}
+var persistT=null,persistP=Promise.resolve();
+function persistNow(){
+  clearTimeout(persistT);persistT=null;
+  if(!SESS||!MEM)return persistP;
+  var snap=MEM.slice();
+  persistP=persistP.then(function(){
+    return Promise.all(snap.map(function(r){
+      var c=encCache[r.id];
+      var p=(c&&c.saved===r.saved&&c.title===r.title)?Promise.resolve(c.enc):encObj({data:r.data,title:r.title}).then(function(e){encCache[r.id]={saved:r.saved,title:r.title,enc:e};return e;});
+      return p.then(function(e){return {id:r.id,created:r.created,saved:r.saved,synced:r.synced||0,enc:e};});
+    })).then(function(items){
+      try{localStorage.setItem(MKEY,JSON.stringify({v:2,items:items}));}catch(e){alert('บันทึกไม่ได้: พื้นที่เก็บข้อมูลเต็ม ลองลบรายงานเก่าที่ไม่ใช้');}
+    });
+  }).catch(function(e){if(window.console)console.warn('persist',e);});
+  return persistP;
+}
+function mSaveList(l){
+  if(encOn()){if(!SESS)return false;MEM=l.slice();clearTimeout(persistT);persistT=setTimeout(persistNow,250);return true;}
+  try{localStorage.setItem(MKEY,JSON.stringify(l));return true;}catch(e){alert('บันทึกไม่ได้: พื้นที่เก็บข้อมูลเต็ม ลองลบรายงานเก่าที่ไม่ใช้ หรือกด "ส่งออกไฟล์สำรอง" แล้วลบ');return false;}
+}
+function loadEnc(){
+  var raw=null;try{raw=JSON.parse(localStorage.getItem(MKEY)||'null');}catch(e){}
+  if(!raw){MEM=[];return Promise.resolve();}
+  if(Array.isArray(raw)){MEM=raw;return persistNow();}   /* ย้ายข้อมูลเดิมที่ยังไม่เข้ารหัส */
+  var bad=0;
+  return Promise.all((raw.items||[]).map(function(it){
+    return decObj(it.enc).then(function(p){encCache[it.id]={saved:it.saved,title:p.title,enc:it.enc};return {id:it.id,created:it.created,saved:it.saved,synced:it.synced,title:p.title,data:p.data};},function(){bad++;return null;});
+  })).then(function(l){MEM=l.filter(Boolean);MEM.sort(function(a,b){return (b.saved||0)-(a.saved||0);});if(bad)mStatus('⚠️ มี '+bad+' รายงานในเครื่องที่ถอดรหัสไม่ได้');});
+}
+function safeTitle(d){return 'ครั้งที่ '+(d.f.mno||'…')+'/'+(d.f.myr||'…')+(d.f.mdt?' · '+thaiDate(d.f.mdt):'')+' · '+d.ags.length+' วาระ';}
 function mCur(){try{return localStorage.getItem(MCUR)||'';}catch(e){return '';}}
 function mSetCur(id){try{if(id)localStorage.setItem(MCUR,id);else localStorage.removeItem(MCUR);}catch(e){}}
 var restoring=false;
@@ -2130,6 +2187,7 @@ function restore(d,done){
 var saveT=null,lastSaved='';
 function saveNow(force){
   if(restoring)return;
+  if(encOn()&&!SESS)return;
   var d=serialize(),js=JSON.stringify(d);
   if(!force&&js===lastSaved)return;
   if(!hasContent(d)&&!mCur())return;
@@ -2173,17 +2231,24 @@ function delRec(id){
   renderModal();mStatus('ลบแล้ว');
 }
 function exportAll(){
-  var blob=new Blob([JSON.stringify({type:'chokchai-meetings',ver:1,exported:Date.now(),items:mList()},null,1)],{type:'application/json'});
+  if(encOn()&&SESS){encObj(mList()).then(function(e){dl({type:'chokchai-meetings',ver:2,enc:e,exported:Date.now()});});return;}
+  dl({type:'chokchai-meetings',ver:1,exported:Date.now(),items:mList()});
+}
+function dl(obj){
+  var blob=new Blob([JSON.stringify(obj,null,1)],{type:'application/json'});
   var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='รายงานประชุม-สำรอง-'+new Date().toISOString().slice(0,10)+'.json';
   document.body.appendChild(a);a.click();setTimeout(function(){document.body.removeChild(a);},500);
 }
 function importAll(file){
   var rd=new FileReader();
   rd.onload=function(){
-    try{var o=JSON.parse(rd.result),items=o.items||[];var l=mList(),have={},n=0;l.forEach(function(x){have[x.id]=1;});
-      items.forEach(function(x){if(x&&x.id&&x.data&&!have[x.id]){l.push(x);n++;}});
-      l.sort(function(a,b){return (b.saved||0)-(a.saved||0);});mSaveList(l);renderModal();alert('นำเข้าแล้ว '+n+' รายงาน');
-    }catch(e){alert('ไฟล์ไม่ถูกต้อง');}
+    var o;try{o=JSON.parse(rd.result);}catch(e){alert('ไฟล์ไม่ถูกต้อง');return;}
+    var p=o.enc?decObj(o.enc):Promise.resolve(o.items||[]);
+    p.then(function(items){
+      var l=mList(),have={},n=0;l.forEach(function(x){have[x.id]=1;});
+      items.forEach(function(x){if(x&&x.id&&x.data&&!have[x.id]){x.synced=0;l.push(x);n++;}});
+      l.sort(function(a,b){return (b.saved||0)-(a.saved||0);});mSaveList(l);renderModal();alert('นำเข้าแล้ว '+n+' รายงาน');if(n)cSync();
+    },function(){alert('ถอดรหัสไฟล์ไม่ได้ — ไฟล์นี้เข้ารหัสด้วยรหัสผ่านอื่น');});
   };
   rd.readAsText(file);
 }
@@ -2243,7 +2308,13 @@ var MCSS='.mm-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;backgro
 +'#mm-conn .mm-q{padding:10px;border:1px solid #ccc;border-radius:8px;font-family:inherit;font-size:15px}#mm-conn .mm-note{font-size:12px;color:#777}'
 +'#mm-conn .mm-new{background:#4caf50;color:#fff;border:none;border-radius:8px;padding:12px;font-family:inherit;font-size:15px;font-weight:700;cursor:pointer}'
 +'#mm-conn .mm-off{background:#fff;color:#c00;border:1px solid #f3c0c0;border-radius:8px;padding:10px;font-family:inherit;font-size:14px;cursor:pointer}'
-+'@media print{.mm-bar,#mm-modal,#mm-conn{display:none!important}}';
++'#mm-lock{display:none;position:fixed;inset:0;z-index:2147483600;background:#1a3a2a;align-items:center;justify-content:center;font-family:inherit;padding:20px}'
++'#mm-lock .lk-box{background:#fff;border-radius:18px;padding:26px 22px;width:100%;max-width:360px;text-align:center;display:flex;flex-direction:column;gap:10px;box-shadow:0 10px 40px rgba(0,0,0,.35)}'
++'#mm-lock .lk-ic{font-size:44px}#mm-lock .lk-t{font-size:18px;font-weight:800;color:#1a3a2a}#mm-lock .lk-s{font-size:13px;color:#777}'
++'#mm-lock input{padding:12px;border:1px solid #ccc;border-radius:10px;font-size:17px;font-family:inherit;text-align:center}'
++'#mm-lock button{background:#1a3a2a;color:#fff;border:none;border-radius:10px;padding:13px;font-size:16px;font-weight:700;font-family:inherit;cursor:pointer}#mm-lock button:disabled{opacity:.6}'
++'#mm-lock .lk-msg{font-size:13px;color:#c62828;min-height:18px}#mm-lock a{font-size:12px;color:#888}'
++'@media print{.mm-bar,#mm-modal,#mm-conn,#mm-lock{display:none!important}}';
 /* ---------- ซิงก์กับ Google Sheets (ผ่าน Apps Script ของผู้ใช้เอง) ---------- */
 var CKEY='chokchai_cloud_v1',CDEL='chokchai_cloud_dels',PEPPER='chokchai-v1:';
 var DEFAULT_URL='https://script.google.com/macros/s/AKfycbwItv1vvn7VpxPnL5jeoalPGl7SIRoMT4CoAvdMcrE5KWTPvBrMgi3OBNzQqXCYy2-P/exec';
@@ -2258,7 +2329,7 @@ function sha256hex(str){
 }
 function cCall(action,extra,cfg){
   cfg=cfg||cCfg();if(!cfg)return Promise.reject(new Error('noconfig'));
-  var body={action:action,key:cfg.key};for(var k in extra)if(extra.hasOwnProperty(k))body[k]=extra[k];
+  var body={action:action,key:(SESS&&SESS.auth)||cfg.key};for(var k in extra)if(extra.hasOwnProperty(k))body[k]=extra[k];
   return fetch(cfg.url,{method:'POST',body:JSON.stringify(body),redirect:'follow'}).then(function(r){return r.json();}).then(function(o){
     if(!o||!o.ok){var er=new Error((o&&o.error)||'error');er.server=true;throw er;}return o;});
 }
@@ -2276,44 +2347,58 @@ function cStatus(){
   e.className='cl '+(pend?'warn':'ok');
 }
 function cFail(err){cState.busy=false;cState.err=(err&&err.server)?err.message:'net';cStatus();}
+function decRec(s){
+  if(!s||s.deleted||!s.data)return Promise.resolve(s);
+  if(s.data.enc)return decObj(s.data.enc).then(function(p){return {id:s.id,created:s.created,saved:s.saved,title:p.title,data:p.data};});
+  return Promise.resolve({id:s.id,created:s.created,saved:s.saved,title:s.title,data:s.data,plain:true});
+}
 function cPush(rec){
-  return cCall('save',{record:{id:rec.id,title:rec.title,created:rec.created,saved:rec.saved,data:rec.data}}).then(function(o){
-    var l=mList();
-    for(var k=0;k<l.length;k++)if(l[k].id===rec.id){
-      if(o.stale&&o.record){
-        if(o.record.deleted){l.splice(k,1);if(mCur()===rec.id)mSetCur('');}
-        else{o.record.synced=o.record.saved;l[k]=o.record;}
-      }else if(l[k].saved===rec.saved)l[k].synced=rec.saved;
-      break;}
-    mSaveList(l);
+  return encObj({data:rec.data,title:rec.title}).then(function(e){
+    return cCall('save',{record:{id:rec.id,title:safeTitle(rec.data),created:rec.created,saved:rec.saved,data:{enc:e}}});
+  }).then(function(o){
+    var p=(o.stale&&o.record)?decRec(o.record).catch(function(){return null;}):Promise.resolve(null);
+    return p.then(function(sr){
+      var l=mList();
+      for(var k=0;k<l.length;k++)if(l[k].id===rec.id){
+        if(o.stale&&o.record){
+          if(o.record.deleted){l.splice(k,1);if(mCur()===rec.id)mSetCur('');}
+          else if(sr){sr.synced=sr.plain?0:sr.saved;delete sr.plain;l[k]=sr;}
+        }else if(l[k].saved===rec.saved)l[k].synced=rec.saved;
+        break;}
+      mSaveList(l);
+    });
   });
 }
 function cSync(){
-  if(!cCfg()||cState.busy)return Promise.resolve();
+  if(!cCfg()||!SESS||cState.busy)return Promise.resolve();
   cState.busy=true;cState.err='';cStatus();
   var dels=cDels();
   var p=Promise.resolve();
   dels.forEach(function(d){p=p.then(function(){return cCall('delete',{id:d.id,saved:d.saved});});});
+  var undec=0;
   return p.then(function(){cSetDels([]);return cCall('list',{});}).then(function(o){
+    return Promise.all((o.items||[]).map(function(s){return decRec(s).catch(function(){undec++;return null;});}));
+  }).then(function(items){
     var l=mList(),byId={},k;
     for(k=0;k<l.length;k++)byId[l[k].id]=l[k];
-    (o.items||[]).forEach(function(s){
+    items.filter(Boolean).forEach(function(s){
+      var wasPlain=!!s.plain;delete s.plain;
       var loc=byId[s.id];
       if(s.deleted){if(loc&&(loc.saved||0)<=s.saved){l=l.filter(function(x){return x.id!==s.id;});if(mCur()===s.id)mSetCur('');}return;}
       if(!s.data)return;
-      if(!loc){s.synced=s.saved;l.push(s);}
-      else if(s.saved>(loc.saved||0)){s.synced=s.saved;for(var j=0;j<l.length;j++)if(l[j].id===s.id)l[j]=s;}
-      else if(s.saved===loc.saved)loc.synced=s.saved;
+      if(!loc){s.synced=wasPlain?0:s.saved;l.push(s);}
+      else if(s.saved>(loc.saved||0)){s.synced=wasPlain?0:s.saved;for(var j=0;j<l.length;j++)if(l[j].id===s.id)l[j]=s;}
+      else if(s.saved===loc.saved)loc.synced=wasPlain?0:s.saved;
     });
     l.sort(function(a,b){return (b.saved||0)-(a.saved||0);});
     mSaveList(l);
     var q=Promise.resolve();
     l.filter(function(r){return !r.synced||r.synced<r.saved;}).forEach(function(r){q=q.then(function(){return cPush(r);});});
     return q;
-  }).then(function(){cState.busy=false;cState.last=Date.now();cState.err='';cStatus();var m=$('mm-modal');if(m&&m.style.display==='flex')renderModal();var c=$('mm-count');if(c)c.textContent=mList().length;},cFail);
+  }).then(function(){cState.busy=false;cState.last=Date.now();cState.err='';cStatus();if(undec)mStatus('⚠️ มี '+undec+' รายงานในชีตที่ถอดรหัสไม่ได้ (เข้ารหัสด้วยรหัสผ่านอื่น)');var m=$('mm-modal');if(m&&m.style.display==='flex')renderModal();var c=$('mm-count');if(c)c.textContent=mList().length;},cFail);
 }
 var cT=null;
-function cSchedule(){if(!cCfg())return;clearTimeout(cT);cT=setTimeout(function(){
+function cSchedule(){if(!cCfg()||!SESS)return;clearTimeout(cT);cT=setTimeout(function(){
   var id=mCur(),l=mList(),rec=null;for(var k=0;k<l.length;k++)if(l[k].id===id)rec=l[k];
   if(!rec||(rec.synced&&rec.synced>=rec.saved)){cStatus();return;}
   cState.busy=true;cStatus();
@@ -2326,7 +2411,7 @@ function connectDialog(){
   m.innerHTML='<div class="mm-box"><div class="mm-head"><b>☁️ เชื่อม Google Sheets</b><button class="mm-x" data-c="close">×</button></div>'
     +'<label class="cl-l">รหัสผ่าน (ที่ตั้งไว้ในชีต)</label><input id="mm-pw" class="mm-q" type="password" autocomplete="current-password">'
     +'<details style="font-size:12px;color:#777"><summary>ตั้งค่าลิงก์ Web App (ปกติไม่ต้องแก้)</summary><input id="mm-url" class="mm-q" style="width:100%;margin-top:6px;font-size:12px" value="'+esc(cfg?cfg.url:DEFAULT_URL)+'"></details>'
-    +'<div class="mm-note" style="text-align:left">รหัสผ่านไม่ถูกเก็บในไฟล์ HTML — เครื่องนี้จำไว้แค่ค่าที่เข้ารหัสแล้ว ถ้าเครื่องหายหรือให้คนอื่นยืม ให้เปลี่ยนรหัสในชีต</div>'
+    +'<div class="mm-note" style="text-align:left">🔐 รายงานจะถูกเข้ารหัสด้วยรหัสผ่านนี้ก่อนส่งขึ้นชีตและเก็บในเครื่อง — <b>ลืมรหัสผ่าน = เปิดรายงานไม่ได้อีก</b> กรุณาจดเก็บไว้ในที่ปลอดภัย</div>'
     +'<div id="mm-cmsg" class="mm-note"></div>'
     +'<button class="mm-new" data-c="go">เชื่อมต่อ</button>'
     +(cfg?'<button class="mm-off" data-c="off">ยกเลิกการเชื่อมต่อในเครื่องนี้</button>':'')+'</div>';
@@ -2336,15 +2421,27 @@ function connectDialog(){
     var b=e.target.closest?e.target.closest('[data-c]'):null;if(!b)return;
     var a=b.getAttribute('data-c'),msg=$('mm-cmsg');
     if(a==='close'){m.style.display='none';return;}
-    if(a==='off'){if(confirm('ยกเลิกการเชื่อมต่อ Google Sheets ในเครื่องนี้? (ข้อมูลในชีตยังอยู่ครบ)')){cSetCfg(null);cState.err='';cStatus();m.style.display='none';}return;}
+    if(a==='off'){if(confirm('ยกเลิกการเชื่อมต่อในเครื่องนี้? รายงานที่ซิงก์แล้วยังอยู่ในชีตครบ แต่สำเนาที่เข้ารหัสในเครื่องนี้จะถูกลบ')){persistNow().then(function(){cSetCfg(null);cState.err='';SESS=null;MEM=null;try{sessionStorage.removeItem(SKEY);localStorage.removeItem(MKEY);}catch(e){}location.reload();});}return;}
     if(a==='go'){
       var url=($('mm-url').value||'').trim(),pw=$('mm-pw').value||'';
       if(!/^https:\/\/script\.google(usercontent)?\.com\//.test(url)){msg.textContent='ลิงก์ต้องขึ้นต้นด้วย https://script.google.com/…';return;}
       if(pw.length<8){msg.textContent='ใส่รหัสผ่าน (อย่างน้อย 8 ตัว)';return;}
       msg.textContent='กำลังตรวจสอบ…';
+      var auth;
       sha256hex(PEPPER+pw).then(function(key){
-        var c={url:url,key:key};
-        return cCall('ping',{},c).then(function(){cSetCfg(c);msg.textContent='เชื่อมต่อแล้ว ✅';m.style.display='none';cState.err='';cSync();});
+        auth=key;return cCall('ping',{},{url:url,key:key});
+      }).then(function(){msg.textContent='กำลังสร้างกุญแจเข้ารหัส…';return deriveEK(pw);}).then(function(ek){
+        var wasPlain=!encOn(),old=wasPlain?(plainList()||[]):null;
+        SESS={auth:auth,ek:ek};
+        return encObj({ok:'chokchai'},ek).then(function(check){
+          cSetCfg({url:url,check:check});
+          if(wasPlain||!MEM)MEM=old||MEM||[];
+          return saveSess().then(persistNow);
+        });
+      }).then(function(){
+        killPlainAutosave();hideLock();
+        msg.textContent='เชื่อมต่อแล้ว ✅';m.style.display='none';cState.err='';cStatus();cSync();
+        if(window.__mlAfterUnlock){var f=window.__mlAfterUnlock;window.__mlAfterUnlock=null;f();}
       }).catch(function(err){
         var t=err&&err.message;
         msg.textContent=t==='auth'?'รหัสผ่านไม่ถูกต้อง':t==='locked'?'ใส่รหัสผิดหลายครั้ง ระบบล็อก 15 นาที':t==='nopassword'?'ยังไม่ได้ตั้งรหัสผ่านในชีต (เมนู 🔒 ระบบเอกสาร)':t==='nocrypto'?'เบราว์เซอร์นี้ไม่รองรับ ต้องเปิดผ่าน https':'เชื่อมต่อไม่ได้ — ตรวจลิงก์ และตั้งค่า "ผู้มีสิทธิ์เข้าถึง: ทุกคน" ตอนทำให้ใช้งานได้';
@@ -2353,11 +2450,50 @@ function connectDialog(){
   };
 }
 
+/* ---------- หน้าล็อกแอป ---------- */
+var LOCK_MIN=15,lastAct=Date.now();
+function killPlainAutosave(){
+  window.__noPlainAutosave=true;
+  try{if(window.LS_KEY)localStorage.removeItem(window.LS_KEY);}catch(e){}
+}
+function hideLock(){var o=$('mm-lock');if(o)o.style.display='none';document.documentElement.style.overflow='';}
+function showLock(onOk){
+  var o=$('mm-lock');
+  if(!o){o=document.createElement('div');o.id='mm-lock';o.className='no-print';document.body.appendChild(o);}
+  o.innerHTML='<div class="lk-box"><div class="lk-ic">🔒</div><div class="lk-t">รายงานการประชุมถูกล็อก</div>'
+    +'<div class="lk-s">ใส่รหัสผ่านเพื่อเปิดรายงานที่เข้ารหัสไว้</div>'
+    +'<input id="lk-pw" type="password" autocomplete="current-password" placeholder="รหัสผ่าน">'
+    +'<div id="lk-msg" class="lk-msg"></div><button id="lk-go">ปลดล็อก</button>'
+    +'<a href="#" id="lk-forgot">ลืมรหัสผ่าน?</a><a href="index'+(location.pathname.indexOf('V2')>=0?'V2':'')+'.html" class="lk-home">← หน้าหลัก</a></div>';
+  o.style.display='flex';document.documentElement.style.overflow='hidden';
+  var go=function(){
+    var pw=$('lk-pw').value||'',msg=$('lk-msg');if(!pw){msg.textContent='ใส่รหัสผ่าน';return;}
+    msg.textContent='กำลังตรวจสอบ…';$('lk-go').disabled=true;
+    var cfg=cCfg(),auth;
+    sha256hex(PEPPER+pw).then(function(a){auth=a;return deriveEK(pw);}).then(function(ek){
+      if(cfg.check)return decObj(cfg.check,ek).then(function(){return ek;});
+      if(cfg.key&&cfg.key===auth)return encObj({ok:'chokchai'},ek).then(function(ch){cSetCfg({url:cfg.url,check:ch});return ek;});
+      throw new Error('bad');
+    }).then(function(ek){SESS={auth:auth,ek:ek};return saveSess();}).then(function(){
+      $('lk-pw').value='';hideLock();lastAct=Date.now();if(onOk)onOk();
+    }).catch(function(){msg.textContent='รหัสผ่านไม่ถูกต้อง';$('lk-go').disabled=false;$('lk-pw').select();});
+  };
+  $('lk-go').onclick=go;$('lk-pw').onkeydown=function(e){if(e.key==='Enter')go();};
+  $('lk-forgot').onclick=function(e){e.preventDefault();
+    if(confirm('รายงานถูกเข้ารหัสด้วยรหัสผ่าน ถ้าลืมจะเปิดรายงานเดิมไม่ได้ (รวมถึงในชีต)\n\nกด ตกลง เพื่อล้างข้อมูลในเครื่องนี้และเริ่มใหม่แบบไม่เชื่อมชีต\n(ถ้าจำรหัสได้ภายหลัง เชื่อมใหม่ก็ดึงรายงานจากชีตกลับมาได้)')){
+      try{localStorage.removeItem(MKEY);localStorage.removeItem(CKEY);localStorage.removeItem(MCUR);sessionStorage.removeItem(SKEY);}catch(er){}location.reload();}};
+  setTimeout(function(){try{$('lk-pw').focus();}catch(e){}},50);
+}
+function lockNow(){
+  saveNow(true);
+  persistNow().then(function(){SESS=null;MEM=null;encCache={};try{sessionStorage.removeItem(SKEY);}catch(e){}location.reload();});
+}
+
 function initSaves(){
   var st=document.createElement('style');st.textContent=MCSS;document.head.appendChild(st);
   var form=$('meet-form'),head=form&&form.querySelector('.ui-head');
   var bar=document.createElement('div');bar.className='mm-bar no-print';
-  bar.innerHTML='<button type="button" id="mm-openlist">📂 รายงานที่บันทึกไว้ (<span id="mm-count">0</span>)</button><button type="button" class="lt" id="mm-new">➕ เริ่มรายงานใหม่</button><button type="button" class="lt" id="mm-cloudbtn">☁️ Google Sheets</button><span class="st" id="mm-status"></span><span class="cl off" id="mm-cloud"></span>';
+  bar.innerHTML='<button type="button" id="mm-openlist">📂 รายงานที่บันทึกไว้ (<span id="mm-count">0</span>)</button><button type="button" class="lt" id="mm-new">➕ เริ่มรายงานใหม่</button><button type="button" class="lt" id="mm-cloudbtn">☁️ Google Sheets</button><button type="button" class="lt" id="mm-lockbtn" style="display:none">🔒 ล็อก</button><span class="st" id="mm-status"></span><span class="cl off" id="mm-cloud"></span>';
   if(head&&head.nextSibling)head.parentNode.insertBefore(bar,head.nextSibling);else if(form)form.insertBefore(bar,form.firstChild);
   $('mm-openlist').addEventListener('click',function(){saveNow(false);renderModal();cSync();});
   $('mm-cloudbtn').addEventListener('click',connectDialog);
@@ -2366,14 +2502,34 @@ function initSaves(){
   form.addEventListener('click',function(e){if(e.target.closest&&e.target.closest('.ml-pdel,.rb,.dyn-del'))schedSave();},true);
   ['addAg','removeAg','changeAg','addHistRow','addRemainRow'].forEach(function(fn){var o=window[fn];if(typeof o!=='function')return;window[fn]=function(){var r=o.apply(this,arguments);schedSave();return r;};});
   var og=window.genMeeting;if(typeof og==='function')window.genMeeting=function(){saveNow(true);return og.apply(this,arguments);};
-  window.addEventListener('beforeunload',function(){saveNow(false);});
-  document.addEventListener('visibilitychange',function(){if(document.hidden)saveNow(false);});
+  window.addEventListener('beforeunload',function(){saveNow(false);persistNow();});
+  document.addEventListener('visibilitychange',function(){if(document.hidden){saveNow(false);persistNow();}});
+  $('mm-lockbtn').addEventListener('click',function(){if(encOn())lockNow();else connectDialog();});
+  ['input','click','keydown','touchstart','scroll'].forEach(function(ev){document.addEventListener(ev,function(){lastAct=Date.now();},true);});
+  setInterval(function(){if(encOn()&&SESS&&Date.now()-lastAct>LOCK_MIN*60000)lockNow();},30000);
+  window.addEventListener('online',function(){if(cCfg()&&SESS)cSync();});
+  if(!encOn()){afterUnlock();return;}
+  killPlainAutosave();
+  window.__mlAfterUnlock=null;
+  loadSess().then(function(ok){
+    if(ok)return afterUnlock();
+    var box=$('agenda-box');if(box)box.innerHTML='';
+    showLock(afterUnlock);
+  });
+}
+var unlockedOnce=false;
+function afterUnlock(){
+  if(unlockedOnce)return;unlockedOnce=true;
+  var p=encOn()?loadEnc():Promise.resolve();
+  p.then(function(){afterLoad();},function(e){if(window.console)console.warn(e);afterLoad();});
+}
+function afterLoad(){
   var id=mCur(),l=mList(),rec=null;for(var k=0;k<l.length;k++)if(l[k].id===id)rec=l[k];
   if(rec){restore(rec.data,function(){lastSaved=JSON.stringify(serialize());mStatus('📂 เปิดต่อจากครั้งก่อน: '+rec.title);});}
   else mStatus(l.length?'📝 รายงานใหม่ — จะบันทึกอัตโนมัติเมื่อเริ่มกรอก':'จะบันทึกอัตโนมัติเมื่อเริ่มกรอก');
-  cStatus();
-  if(cCfg()){setTimeout(cSync,1200);setInterval(function(){if(cState.err&&cState.err!=='auth'&&cState.err!=='locked'&&cState.err!=='nopassword')cSync();},60000);}
-  window.addEventListener('online',function(){if(cCfg())cSync();});
+  cStatus();var c0=$('mm-count');if(c0)c0.textContent=mList().length;
+  var lb=$('mm-lockbtn');if(lb)lb.style.display=encOn()?'':'none';
+  if(cCfg()){setTimeout(cSync,1200);setInterval(function(){if(SESS&&cState.err&&cState.err!=='auth'&&cState.err!=='locked'&&cState.err!=='nopassword')cSync();},60000);}
 }
 
 function initSource(){
@@ -2667,6 +2823,7 @@ function initTarget(kind){
   if(document.readyState==='complete')start();else window.addEventListener('load',start);
 }
 
+try{[KEY,POA_KEY].forEach(function(k){var d=load(k);if(d&&d.ts&&Date.now()-d.ts>7*864e5)localStorage.removeItem(k);});}catch(e){}
 var kind=window.ML_KIND?window.ML_KIND:$('meet-form')?'source':$('mort-form')?'mortgage':$('sb-form')?'sellback':$('dl-form')?'dirloan':($('grantor')&&$('tpl_sel'))?'poa':null;
 if(kind==='source')initSource();else if(kind){initTarget(kind);if(kind==='mortgage'||kind==='sellback'||kind==='topup')hookDocGen(kind);}
 window.MeetLink={collect:collect,load:load,connect:function(){try{connectDialog();}catch(e){}}};
